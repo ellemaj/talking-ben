@@ -27,8 +27,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   const userChannel = interaction.member.voice.channel;
 
-  // Leave the VC when the command "/leave" is given
-  if (interaction.commandName === 'leave') {
+  // Leave the VC when the command "/hangup" is given
+  if (interaction.commandName === 'hangup') {
   if (connection) {
     try {
       // play the leave sound
