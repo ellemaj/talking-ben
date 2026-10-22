@@ -5,7 +5,9 @@ This repository is filled with code for a working **Talking Ben Discord Bot**. T
 Then you need to make a .env file with the following:
 - A Discord token
 - Your Bot's token
-- Guild ID
+- Guild ID (optional: only used to clean up old server-only commands)
+
+The commands are registered globally, so Ben works in every server he is invited to, and in multiple servers at the same time.
 
 ## Run Ben
 
