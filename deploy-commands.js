@@ -11,6 +11,7 @@ const commands = [
   new SlashCommandBuilder().setName('rustle').setDescription('rustle'),
   new SlashCommandBuilder().setName('yes').setDescription('yes'),
   new SlashCommandBuilder().setName('hangup').setDescription('Laat Ben de voice channel verlaten'),
+  new SlashCommandBuilder().setName('switch').setDescription('Verplaats Ben naar jouw voice channel'),
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);

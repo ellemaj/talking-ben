@@ -64,6 +64,36 @@ client.on(Events.InteractionCreate, async (interaction) => {
     });
   }
 
+  // Move Ben to the VC of the user with "/switch"
+  if (interaction.commandName === 'switch') {
+    if (!connection || connection.state.status === 'destroyed') {
+      return interaction.reply({ content: 'Ik zit niet in een VC! Gebruik eerst /callben.', ephemeral: true });
+    }
+
+    if (connection.joinConfig.channelId === userChannel.id) {
+      return interaction.reply({ content: 'Ik zit al in jouw VC!', ephemeral: true });
+    }
+
+    try {
+      // joinVoiceChannel reuses the existing connection and moves it to the new channel
+      connection = joinVoiceChannel({
+        channelId: userChannel.id,
+        guildId: userChannel.guild.id,
+        adapterCreator: userChannel.guild.voiceAdapterCreator,
+      });
+      connection.subscribe(player);
+
+      // Play ben.mp3 after switching
+      player.play(createAudioResource(path.join(soundsDir, 'ben.mp3')));
+      console.log(`Switched to VC: ${userChannel.name}`);
+
+      return interaction.reply({ content: `Switched naar ${userChannel.name}`, ephemeral: true });
+    } catch (err) {
+      console.error(err);
+      return interaction.reply({ content: 'Switchen is mislukt, probeer het nog een keer!', ephemeral: true });
+    }
+  }
+
   let soundFile;
   if (interaction.commandName === 'callben') {
     soundFile = getRandomSound();
