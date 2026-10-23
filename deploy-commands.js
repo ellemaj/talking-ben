@@ -12,6 +12,12 @@ const commands = [
   new SlashCommandBuilder().setName('yes').setDescription('yes'),
   new SlashCommandBuilder().setName('hangup').setDescription('Laat Ben de voice channel verlaten'),
   new SlashCommandBuilder().setName('switch').setDescription('Verplaats Ben naar jouw voice channel'),
+  new SlashCommandBuilder()
+    .setName('ask')
+    .setDescription('Stel Ben een vraag')
+    .addStringOption(option =>
+      option.setName('vraag').setDescription('Wat wil je Ben vragen?').setRequired(true).setMaxLength(200)
+    ),
 ].map(cmd => cmd.setContexts(InteractionContextType.Guild).toJSON()); // only usable in servers, not in DMs
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);

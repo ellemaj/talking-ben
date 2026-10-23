@@ -18,6 +18,14 @@ const client = new Client({
 const soundsDir = path.join(__dirname, 'sounds');
 const sounds = fs.readdirSync(soundsDir).filter(f => f.endsWith('.mp3'));
 const getRandomSound = () => sounds[Math.floor(Math.random() * sounds.length)];
+// Possible answers for "/ask"
+const answers = [
+  { file: 'yes.mp3', text: 'Yes.' },
+  { file: 'no.mp3', text: 'No.' },
+  { file: 'hohoho.mp3', text: 'Ho ho ho!' },
+  { file: 'grrr.mp3', text: 'Grrr...' },
+];
+
 const playSound = (player, file) => player.play(createAudioResource(path.join(soundsDir, file)));
 
 // Every server gets its own connection and audio player: guildId -> { connection, player }
@@ -132,6 +140,33 @@ client.on(Events.InteractionCreate, async (interaction) => {
     } catch (err) {
       console.error(err);
       return interaction.reply({ content: 'Switchen is mislukt, probeer het nog een keer!', ephemeral: true });
+    }
+  }
+
+  // Ask Ben a question with "/ask", he answers with a random sound
+  if (interaction.commandName === 'ask') {
+    const question = interaction.options.getString('vraag', true);
+    const answer = answers[Math.floor(Math.random() * answers.length)];
+
+    try {
+      if (!isConnected(state)) {
+        // Ben picks up first, then answers when ben.mp3 is done
+        connectTo(state, userChannel);
+        playSound(state.player, 'ben.mp3');
+        state.player.once(AudioPlayerStatus.Idle, () => playSound(state.player, answer.file));
+      } else {
+        playSound(state.player, answer.file);
+      }
+      console.log(`[${interaction.guild.name}] Ask: "${question}" -> ${answer.file}`);
+
+      // Public reply so everyone can see the question and answer
+      return interaction.reply({
+        content: `🗣️ **${interaction.member.displayName}:** ${question}\n📞 **Ben:** ${answer.text}`,
+        allowedMentions: { parse: [] }, // don't ping anyone mentioned in the question
+      });
+    } catch (err) {
+      console.error(err);
+      return interaction.reply({ content: 'Ben neemt niet op, probeer het nog een keer!', ephemeral: true });
     }
   }
 
