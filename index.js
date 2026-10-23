@@ -29,6 +29,11 @@ const answers = [
 // Auto-leave: hang up when nobody is in the VC anymore
 const ALONE_TIMEOUT = 60 * 1000; // 1 minute
 
+// Listening: Ben answers when someone is done talking
+const SILENCE_BEFORE_ANSWER = 1200; // ms of silence before Ben thinks you're done talking
+const MIN_TALK_TIME = 800; // ms, ignore short sounds like coughs or "uh"
+const ANSWER_COOLDOWN = 4000; // ms between two answers
+
 const playSound = (player, file) => player.play(createAudioResource(path.join(soundsDir, file)));
 
 // Every server gets its own connection, audio player and timers: guildId -> state
@@ -40,7 +45,14 @@ const getPlayer = (guildId) => {
     const player = createAudioPlayer();
     player.on(AudioPlayerStatus.Idle, () => console.log(`[${guildId}] Audio klaar`));
     player.on('error', (err) => console.error(`[${guildId}] Audio error:`, err));
-    state = { connection: null, player, aloneTimer: null };
+    state = {
+      connection: null,
+      player,
+      aloneTimer: null,
+      listening: true, // toggle with /listen
+      speakers: new Map(), // userId -> { startedAt, lastStoppedAt, timer }
+      lastAnswerAt: 0,
+    };
     guilds.set(guildId, state);
   }
   return state;
@@ -64,6 +76,48 @@ const hangUp = (state) => {
   });
 };
 
+const randomAnswer = () => answers[Math.floor(Math.random() * answers.length)];
+
+// Someone stopped talking long enough: Ben answers with a random sound
+const answerSpeaker = (state, guild, userId) => {
+  const speaker = state.speakers.get(userId);
+  state.speakers.delete(userId);
+  if (!speaker || !state.listening || !isConnected(state)) return;
+
+  const talkTime = speaker.lastStoppedAt - speaker.startedAt;
+  if (talkTime < MIN_TALK_TIME) return;
+  if (Date.now() - state.lastAnswerAt < ANSWER_COOLDOWN) return;
+  if (state.player.state.status !== AudioPlayerStatus.Idle) return; // Ben is already talking
+
+  const answer = randomAnswer();
+  state.lastAnswerAt = Date.now();
+  playSound(state.player, answer.file);
+  console.log(`[${guild.name}] Heard someone talk for ${talkTime}ms -> ${answer.file}`);
+};
+
+// Track who is talking, so Ben knows when someone is done
+const listenTo = (state, connection, guild) => {
+  const speaking = connection.receiver.speaking;
+
+  speaking.on('start', (userId) => {
+    if (guild.members.cache.get(userId)?.user.bot) return;
+    const speaker = state.speakers.get(userId);
+    if (speaker) {
+      // Just a short pause, still the same sentence
+      clearTimeout(speaker.timer);
+    } else {
+      state.speakers.set(userId, { startedAt: Date.now(), lastStoppedAt: Date.now(), timer: null });
+    }
+  });
+
+  speaking.on('end', (userId) => {
+    const speaker = state.speakers.get(userId);
+    if (!speaker) return;
+    speaker.lastStoppedAt = Date.now();
+    speaker.timer = setTimeout(() => answerSpeaker(state, guild, userId), SILENCE_BEFORE_ANSWER);
+  });
+};
+
 // Join (or move to) a voice channel
 const connectTo = (state, channel) => {
   // joinVoiceChannel reuses an existing connection in the same server and moves it
@@ -71,14 +125,19 @@ const connectTo = (state, channel) => {
     channelId: channel.id,
     guildId: channel.guild.id,
     adapterCreator: channel.guild.voiceAdapterCreator,
+    selfDeaf: !state.listening, // Ben needs to hear people to answer them
   });
 
   if (connection !== state.connection) {
+    listenTo(state, connection, channel.guild);
+
     // Forget the connection when it gets destroyed (e.g. /hangup or Ben is kicked)
     connection.on(VoiceConnectionStatus.Destroyed, () => {
       if (state.connection === connection) {
         state.connection = null;
         clearAloneTimer(state);
+        state.speakers.forEach(speaker => clearTimeout(speaker.timer));
+        state.speakers.clear();
       }
     });
     // A short disconnect also happens when someone drags Ben to another channel,
@@ -159,6 +218,21 @@ const handleCommand = async (interaction) => {
     }
   }
 
+  // Turn listening on or off with "/listen"
+  if (interaction.commandName === 'listen') {
+    state.listening = interaction.options.getBoolean('aan', true);
+    console.log(`[${interaction.guild.name}] Listening: ${state.listening}`);
+
+    // Show it in Discord: Ben is deafened when he isn't listening
+    if (isConnected(state)) {
+      state.connection.rejoin({ ...state.connection.joinConfig, selfDeaf: !state.listening });
+    }
+    return interaction.reply({
+      content: state.listening ? 'Ben luistert weer mee 👂' : 'Ben luistert niet meer mee 🙉',
+      ephemeral: true,
+    });
+  }
+
   if (!userChannel) {
     return interaction.reply({ content: 'Je moet in een voice channel zitten!', ephemeral: true });
   }
@@ -186,7 +260,7 @@ const handleCommand = async (interaction) => {
   // Ask Ben a question with "/ask", he answers with a random sound
   if (interaction.commandName === 'ask') {
     const question = interaction.options.getString('vraag', true);
-    const answer = answers[Math.floor(Math.random() * answers.length)];
+    const answer = randomAnswer();
 
     try {
       if (!isConnected(state)) {

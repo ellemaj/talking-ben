@@ -18,6 +18,12 @@ const commands = [
     .addStringOption(option =>
       option.setName('vraag').setDescription('Wat wil je Ben vragen?').setRequired(true).setMaxLength(200)
     ),
+  new SlashCommandBuilder()
+    .setName('listen')
+    .setDescription('Zet aan of uit of Ben antwoordt als je praat')
+    .addBooleanOption(option =>
+      option.setName('aan').setDescription('Moet Ben meeluisteren?').setRequired(true)
+    ),
 ].map(cmd => cmd.setContexts(InteractionContextType.Guild).toJSON()); // only usable in servers, not in DMs
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
