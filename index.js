@@ -26,9 +26,12 @@ const answers = [
   { file: 'grrr.mp3', text: 'Grrr...' },
 ];
 
+// Auto-leave: hang up when nobody is in the VC anymore
+const ALONE_TIMEOUT = 60 * 1000; // 1 minute
+
 const playSound = (player, file) => player.play(createAudioResource(path.join(soundsDir, file)));
 
-// Every server gets its own connection and audio player: guildId -> { connection, player }
+// Every server gets its own connection, audio player and timers: guildId -> state
 const guilds = new Map();
 
 const getPlayer = (guildId) => {
@@ -37,7 +40,7 @@ const getPlayer = (guildId) => {
     const player = createAudioPlayer();
     player.on(AudioPlayerStatus.Idle, () => console.log(`[${guildId}] Audio klaar`));
     player.on('error', (err) => console.error(`[${guildId}] Audio error:`, err));
-    state = { connection: null, player };
+    state = { connection: null, player, aloneTimer: null };
     guilds.set(guildId, state);
   }
   return state;
@@ -45,6 +48,21 @@ const getPlayer = (guildId) => {
 
 const isConnected = (state) =>
   state.connection && state.connection.state.status !== VoiceConnectionStatus.Destroyed;
+
+const clearAloneTimer = (state) => {
+  clearTimeout(state.aloneTimer);
+  state.aloneTimer = null;
+};
+
+// Play hangup.mp3 and leave the VC when it's done
+const hangUp = (state) => {
+  const connection = state.connection;
+  if (!connection) return;
+  playSound(state.player, 'hangup.mp3');
+  state.player.once(AudioPlayerStatus.Idle, () => {
+    if (connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
+  });
+};
 
 // Join (or move to) a voice channel
 const connectTo = (state, channel) => {
@@ -58,7 +76,10 @@ const connectTo = (state, channel) => {
   if (connection !== state.connection) {
     // Forget the connection when it gets destroyed (e.g. /hangup or Ben is kicked)
     connection.on(VoiceConnectionStatus.Destroyed, () => {
-      if (state.connection === connection) state.connection = null;
+      if (state.connection === connection) {
+        state.connection = null;
+        clearAloneTimer(state);
+      }
     });
     // A short disconnect also happens when someone drags Ben to another channel,
     // so only give up if he doesn't reconnect within 5 seconds
@@ -83,6 +104,29 @@ client.once(Events.ClientReady, () => {
   console.log(`Bot is online als ${client.user.tag}`);
 });
 
+// VOICE STATE UPDATE: someone joined, left or moved in a VC
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  const guild = newState.guild;
+  const state = guilds.get(guild.id);
+  if (!state || !isConnected(state)) return;
+
+  const benChannel = guild.members.me?.voice.channel;
+  if (!benChannel) return;
+
+  const humans = benChannel.members.filter(member => !member.user.bot).size;
+  if (humans === 0 && !state.aloneTimer) {
+    // Ben is alone, give people a moment to come back
+    console.log(`[${guild.name}] Ben is alone, hanging up in ${ALONE_TIMEOUT / 1000}s`);
+    state.aloneTimer = setTimeout(() => {
+      console.log(`[${guild.name}] Nobody came back, leaving`);
+      state.connection?.destroy();
+    }, ALONE_TIMEOUT);
+  } else if (humans > 0 && state.aloneTimer) {
+    // Someone is back, cancel leaving
+    clearAloneTimer(state);
+  }
+});
+
 // INTERACTION CREATE
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
@@ -91,6 +135,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
   console.log(`[${interaction.guild.name}] Command received: ${interaction.commandName}`);
 
+  await handleCommand(interaction);
+});
+
+const handleCommand = async (interaction) => {
   const state = getPlayer(interaction.guildId);
   const userChannel = interaction.member.voice.channel;
 
@@ -100,21 +148,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.reply({ content: 'Ik zit niet in een VC!', ephemeral: true });
     }
 
-    const connection = state.connection;
     try {
-      // play the leave sound and leave when it's done
-      playSound(state.player, 'hangup.mp3');
+      hangUp(state);
       console.log(`[${interaction.guild.name}] Leaving...`);
-
-      state.player.once(AudioPlayerStatus.Idle, () => {
-        if (connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
-        console.log(`[${interaction.guild.name}] Left voice channel`);
-      });
-
       return interaction.reply({ content: 'Bye bye!', ephemeral: true });
     } catch (err) {
       console.error(err);
-      connection.destroy();
+      state.connection?.destroy();
       return interaction.reply({ content: 'Jullie zijn té gezellig om op te hangen, probeer het nog een keer!', ephemeral: true });
     }
   }
@@ -196,6 +236,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
     console.error(err);
     await interaction.reply({ content: 'Er is een fout opgetreden!', ephemeral: true });
   }
-});
+};
 
 client.login(process.env.DISCORD_TOKEN);
