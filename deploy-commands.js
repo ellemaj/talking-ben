@@ -2,6 +2,7 @@ require('dotenv').config();
 const { REST, Routes, SlashCommandBuilder, InteractionContextType } = require('discord.js');
 
 const commands = [
+  new SlashCommandBuilder().setName('benhelp').setDescription('Bekijk alle commands van Ben'),
   new SlashCommandBuilder().setName('callben').setDescription('Ben bellen'),
   new SlashCommandBuilder().setName('grrr').setDescription('grrrr'),
   new SlashCommandBuilder().setName('hmm').setDescription('hmm'),
