@@ -426,6 +426,31 @@ const handleCommand = async (interaction) => {
     });
   }
 
+  // Ask Ben a question with "/ask", he answers with a random sound.
+  // This also works without a VC: then Ben only answers in the chat.
+  if (interaction.commandName === 'ask') {
+    const question = interaction.options.getString('vraag', true);
+    const answer = randomItem(answers);
+
+    if (isConnected(state)) {
+      playSound(state, answer.file);
+    } else if (userChannel && !checkVoiceChannel(userChannel)) {
+      // Ben picks up first, then answers when ben.mp3 is done
+      connectTo(state, userChannel);
+      playSound(state, 'ben.mp3');
+      state.player.once(AudioPlayerStatus.Idle, () => {
+        if (isConnected(state)) playSound(state, answer.file);
+      });
+    }
+    console.log(`[${interaction.guild.name}] Ask: "${question}" -> ${answer.file}`);
+
+    // Public reply so everyone can see the question and answer
+    return interaction.reply({
+      content: `🗣️ **${interaction.member.displayName}:** ${question}\n📞 **Ben:** ${answer.text}`,
+      allowedMentions: { parse: [] }, // don't ping anyone mentioned in the question
+    });
+  }
+
   if (!userChannel) {
     return interaction.reply({ content: 'Je moet in een voice channel zitten!', ephemeral: true });
   }
@@ -451,30 +476,6 @@ const handleCommand = async (interaction) => {
     playSound(state, 'ben.mp3');
     console.log(`[${interaction.guild.name}] Switched to VC: ${userChannel.name}`);
     return interaction.reply({ content: `Switched naar ${userChannel.name}`, ephemeral: true });
-  }
-
-  // Ask Ben a question with "/ask", he answers with a random sound
-  if (interaction.commandName === 'ask') {
-    const question = interaction.options.getString('vraag', true);
-    const answer = randomItem(answers);
-
-    if (!isConnected(state)) {
-      // Ben picks up first, then answers when ben.mp3 is done
-      connectTo(state, userChannel);
-      playSound(state, 'ben.mp3');
-      state.player.once(AudioPlayerStatus.Idle, () => {
-        if (isConnected(state)) playSound(state, answer.file);
-      });
-    } else {
-      playSound(state, answer.file);
-    }
-    console.log(`[${interaction.guild.name}] Ask: "${question}" -> ${answer.file}`);
-
-    // Public reply so everyone can see the question and answer
-    return interaction.reply({
-      content: `🗣️ **${interaction.member.displayName}:** ${question}\n📞 **Ben:** ${answer.text}`,
-      allowedMentions: { parse: [] }, // don't ping anyone mentioned in the question
-    });
   }
 
   let soundFile;
