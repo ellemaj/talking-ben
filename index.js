@@ -45,6 +45,12 @@ const NEWSPAPER_EXTRA_WAIT = 45 * 1000; // random extra time, so it doesn't feel
 // How long Ben may take to connect to a VC
 const CONNECT_TIMEOUT = 15 * 1000;
 
+// Voice channel status: Ben sets this when the VC doesn't have a status yet
+const VOICE_STATUS = '📞 Talking with Ben';
+const STATUS_REQUEST_TIMEOUT = 5 * 1000;
+const voiceStatuses = new Map(); // channelId -> status, kept up to date by Discord events
+const statusRequests = new Map(); // guildId -> list of functions waiting for the statuses
+
 // Every server gets its own connection, audio player and timers: guildId -> state
 const guilds = new Map();
 
@@ -62,6 +68,7 @@ const getState = (guildId) => {
       listening: true, // toggle with /listen
       speakers: new Map(), // userId -> { startedAt, lastStoppedAt, timer }
       lastAnswerAt: 0,
+      statusChannelId: null, // the VC where Ben set his status
     };
     guilds.set(guildId, state);
   }
@@ -99,10 +106,79 @@ const clearTimers = (state) => {
   state.speakers.clear();
 };
 
+// Ask Discord for the statuses of all VCs in a server.
+// Resolves true when they arrived, or false if Discord didn't answer in time.
+const requestVoiceStatuses = (guild) => new Promise((resolve) => {
+  const waiting = statusRequests.get(guild.id) ?? [];
+  waiting.push(resolve);
+  statusRequests.set(guild.id, waiting);
+  guild.shard.send({ op: 43, d: { guild_id: guild.id, fields: ['status'] } }); // Request Channel Info
+  setTimeout(() => resolve(false), STATUS_REQUEST_TIMEOUT);
+});
+
+const setVoiceStatus = async (channelId, status) => {
+  await client.rest.put(`/channels/${channelId}/voice-status`, { body: { status } });
+  voiceStatuses.set(channelId, status);
+};
+
+// Wait until Discord sees Ben in the channel, because he can only set the status of his own VC
+const waitUntilBenIsIn = (channel) => new Promise((resolve, reject) => {
+  if (channel.guild.members.me.voice.channelId === channel.id) return resolve();
+  const onUpdate = (oldState, newState) => {
+    if (newState.id === client.user.id && newState.channelId === channel.id) {
+      stop();
+      resolve();
+    }
+  };
+  const timer = setTimeout(() => {
+    stop();
+    reject(new Error(`Ben did not join ${channel.name} in time`));
+  }, CONNECT_TIMEOUT);
+  const stop = () => {
+    clearTimeout(timer);
+    client.off(Events.VoiceStateUpdate, onUpdate);
+  };
+  client.on(Events.VoiceStateUpdate, onUpdate);
+});
+
+// Ben joined a VC: give it a status if it doesn't have one yet
+const claimVoiceStatus = async (state, connection, channel) => {
+  const permissions = channel.permissionsFor(channel.guild.members.me);
+  if (!permissions.has(PermissionFlagsBits.SetVoiceChannelStatus)) return;
+
+  try {
+    await waitUntilBenIsIn(channel);
+    const gotStatuses = await requestVoiceStatuses(channel.guild);
+    if (!gotStatuses) return; // we don't know the status, so don't overwrite anything
+    if (voiceStatuses.get(channel.id)) return; // the VC already has a status
+    if (state.connection !== connection || connection.joinConfig.channelId !== channel.id) return; // Ben left or moved
+
+    await setVoiceStatus(channel.id, VOICE_STATUS);
+    state.statusChannelId = channel.id;
+    console.log(`[${channel.guild.name}] Set status of ${channel.name}`);
+  } catch (err) {
+    console.error(`[${channel.guild.name}] Could not set status of ${channel.name}:`, err.message);
+  }
+};
+
+// Ben is leaving: remove his status, unless someone changed it in the meantime
+const releaseVoiceStatus = async (state) => {
+  const channelId = state.statusChannelId;
+  state.statusChannelId = null;
+  if (!channelId || voiceStatuses.get(channelId) !== VOICE_STATUS) return;
+
+  try {
+    await setVoiceStatus(channelId, null);
+  } catch (err) {
+    console.error(`Could not remove status of channel ${channelId}:`, err.message);
+  }
+};
+
 // Play hangup.mp3 and leave the VC when it's done
 const hangUp = (state) => {
   const connection = state.connection;
   if (!connection) return;
+  releaseVoiceStatus(state);
   playSound(state, 'hangup.mp3');
   state.player.once(AudioPlayerStatus.Idle, () => {
     if (connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
@@ -188,6 +264,7 @@ const connectTo = (state, channel) => {
     connection.on(VoiceConnectionStatus.Destroyed, () => {
       if (state.connection === connection) {
         state.connection = null;
+        state.statusChannelId = null;
         clearTimers(state);
       }
     });
@@ -212,6 +289,7 @@ const connectTo = (state, channel) => {
 
   connection.subscribe(state.player);
   state.connection = connection;
+  claimVoiceStatus(state, connection, channel); // runs in the background
 };
 
 // Text for /benhelp
@@ -244,6 +322,7 @@ const helpEmbed = new EmbedBuilder()
       value: [
         'Is het een tijdje stil, dan leest Ben zijn krant.',
         `Zit Ben alleen in de voice channel, dan hangt hij na ${ALONE_TIMEOUT / 1000} seconden op.`,
+        'Heeft de voice channel nog geen status, dan zet Ben er een neer.',
       ].join('\n'),
     },
   );
@@ -251,6 +330,19 @@ const helpEmbed = new EmbedBuilder()
 // READY EVENT
 client.once(Events.ClientReady, () => {
   console.log(`Bot is online als ${client.user.tag}`);
+});
+
+// RAW: Discord events that discord.js doesn't handle itself, for the VC statuses
+client.on(Events.Raw, (packet) => {
+  if (packet.t === 'CHANNEL_INFO') {
+    // Channels without a status may be left out, so forget the old statuses of this server first
+    client.guilds.cache.get(packet.d.guild_id)?.channels.cache.forEach(channel => voiceStatuses.delete(channel.id));
+    for (const channel of packet.d.channels) voiceStatuses.set(channel.id, channel.status ?? null);
+    statusRequests.get(packet.d.guild_id)?.forEach(resolve => resolve(true));
+    statusRequests.delete(packet.d.guild_id);
+  } else if (packet.t === 'VOICE_CHANNEL_STATUS_UPDATE') {
+    voiceStatuses.set(packet.d.id, packet.d.status ?? null);
+  }
 });
 
 // VOICE STATE UPDATE: someone joined, left or moved in a VC
@@ -354,6 +446,7 @@ const handleCommand = async (interaction) => {
       return interaction.reply({ content: 'Ik zit al in jouw VC!', ephemeral: true });
     }
 
+    await releaseVoiceStatus(state); // while Ben is still in the old VC
     connectTo(state, userChannel);
     playSound(state, 'ben.mp3');
     console.log(`[${interaction.guild.name}] Switched to VC: ${userChannel.name}`);
