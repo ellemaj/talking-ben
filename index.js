@@ -37,6 +37,7 @@ const ALONE_TIMEOUT = 60 * 1000; // 1 minute
 const SILENCE_BEFORE_ANSWER = 1200; // ms of silence before Ben thinks you're done talking
 const MIN_TALK_TIME = 800; // ms, ignore short sounds like coughs or "uh"
 const ANSWER_COOLDOWN = 4000; // ms between two answers
+const ANSWER_CHANCE = 0.5; // chance that Ben answers at all (0.5 = half of the time)
 
 // Newspaper: when it's quiet, Ben reads his newspaper every 45 to 90 seconds
 const NEWSPAPER_MIN_WAIT = 45 * 1000;
@@ -215,6 +216,10 @@ const answerSpeaker = (state, guild, userId) => {
   if (talkTime < MIN_TALK_TIME) return;
   if (Date.now() - state.lastAnswerAt < ANSWER_COOLDOWN) return;
   if (state.player.state.status !== AudioPlayerStatus.Idle) return; // Ben is already talking
+  if (Math.random() > ANSWER_CHANCE) {
+    console.log(`[${guild.name}] Heard someone talk for ${talkTime}ms -> Ben ignores it`);
+    return;
+  }
 
   const answer = randomItem(answers);
   state.lastAnswerAt = Date.now();
